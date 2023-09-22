@@ -37,7 +37,7 @@
 #include "cse543-ssl.h"
 
 char *new_filename = "bad.txt";
-
+#define MIM_USAGE "USAGE: cse543-p2-server <private_key_file> <public_key_file> <real-server-IP-address> <MiM option>\n"
 /* Functional Prototypes */
 
 /**********************************************************************
@@ -172,6 +172,23 @@ int send_message( int sock, ProtoMessageHdr *hdr, char *block )
 int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsigned char *key, 
 		     unsigned char *buffer, unsigned int *len )
 {
+	unsigned char *ivnew;
+	ivnew= (unsigned char *)malloc( IVSIZE );
+	int rc = 0;
+	rc = RAND_bytes(ivnew, IVSIZE);
+	assert( rc == 1 );
+	int clen = 0;
+	// unsigned char *iv = (unsigned char *)"0123456789012345";
+	unsigned char *ciphertext, *tag;
+	/* perform encrypt */
+	ciphertext = (unsigned char *)malloc(plaintext_len);
+	tag = (unsigned char *)malloc( TAGSIZE );
+	clen = encrypt( plaintext, plaintext_len, (unsigned char *)NULL, 0, key, ivnew, ciphertext, tag);
+	memcpy(buffer, tag, TAGSIZE);
+	memcpy(buffer+TAGSIZE, ivnew, IVSIZE);
+	memcpy(buffer+TAGSIZE+IVSIZE, ciphertext, clen);
+	*len = clen + TAGSIZE + IVSIZE;
+	return ( clen > 0 ) && ( clen <= plaintext_len );
 }
 
 
@@ -192,6 +209,25 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 int decrypt_message( unsigned char *buffer, unsigned int len, unsigned char *key, 
 		     unsigned char *plaintext, unsigned int *plaintext_len )
 {
+
+	unsigned char *tag = malloc(TAGSIZE);
+	unsigned char *iv = malloc(IVSIZE);
+	unsigned char *ciphertext = malloc(len-TAGSIZE-IVSIZE);
+	memcpy(tag, buffer, TAGSIZE);
+	memcpy(iv, buffer+TAGSIZE, IVSIZE);
+	memcpy(ciphertext, buffer+TAGSIZE+IVSIZE, len-TAGSIZE-IVSIZE);
+	*plaintext_len = decrypt( ciphertext, len-TAGSIZE-IVSIZE, (unsigned char *) NULL, 0, 
+		       tag, key, iv, plaintext );
+	if(*plaintext_len > 0)
+	{
+		/* Success */
+		return 0;
+	}
+	else
+	{
+		/* Verify failed */
+		return -1;
+	}
 }
 
 
@@ -257,7 +293,7 @@ int extract_public_key( char *buffer, unsigned int size, EVP_PKEY **pubkey )
 int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 {
 	//Code from part 1
-    return 0;
+    return RAND_bytes(buffer, size);
 }
 
 
@@ -273,8 +309,42 @@ int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 
 ***********************************************************************/
 /*** YOUR CODE from Part 1 ***/
-int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubkey, char *buffer )
+int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubkey, unsigned char *buffer )
 {
+	unsigned int len = 0;
+	unsigned char *ciphertext;
+	// unsigned char *plaintext;
+	unsigned char *ek;
+	unsigned int ekl; 
+	unsigned char *iv;
+	unsigned int ivl;
+
+	printf("*** seal_symmetric_key ***\n");
+
+	len = rsa_encrypt( key, keylen, &ciphertext, &ek, &ekl, &iv, &ivl, pubkey);
+	
+#if 1
+	printf("seal_symmetric_key is:\n");
+	BIO_dump_fp (stdout, (const char *)ciphertext, len);
+#endif
+
+	memcpy(buffer, &ekl, sizeof(ekl));
+	memcpy(buffer+sizeof(ekl), &ivl, sizeof(ivl));
+	memcpy(buffer+sizeof(ekl)+sizeof(ivl), &len, sizeof(len));
+	memcpy(buffer+sizeof(ekl)+sizeof(ivl)+sizeof(len), ek, ekl);
+	memcpy(buffer+sizeof(ekl)+sizeof(ivl)+sizeof(len)+ekl, iv, ivl);
+	memcpy(buffer+sizeof(ekl)+sizeof(ivl)+sizeof(len)+ekl+ivl, ciphertext, len);
+
+	if(len > 0)
+	{
+		/* Success */
+		return len+sizeof(ekl)+sizeof(ivl)+sizeof(len)+ekl+ivl;
+	}
+	else
+	{
+		/* Verify failed */
+		return -1;
+	}
 }
 
 /**********************************************************************
@@ -291,6 +361,32 @@ int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubke
 /*** YOUR CODE from Part 1 ***/
 int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, unsigned char **key )
 {
+	int res=0;
+	unsigned int ekl; 
+	unsigned int ivl;
+	memcpy(&ekl, buffer, sizeof(int));
+	memcpy(&ivl, buffer+sizeof(int), sizeof(int));
+	memcpy(&len, buffer+sizeof(int)+sizeof(int), sizeof(unsigned int));
+	unsigned char *ciphertext = malloc(len);
+	unsigned char *ek = malloc(ekl);
+	unsigned char *iv = malloc(ivl);
+	memcpy(ek, buffer+sizeof(int)+sizeof(int)+sizeof(unsigned int), ekl);
+	memcpy(iv, buffer+sizeof(int)+sizeof(int)+sizeof(unsigned int)+ekl, ivl);
+	memcpy(ciphertext, buffer+sizeof(int)+sizeof(int)+sizeof(unsigned int)+ekl+ivl, len);
+
+	res = rsa_decrypt(ciphertext, len, ek, ekl, iv, ivl, key, privkey);
+
+
+	if(res > 0)
+	{
+		/* Success */
+		return 0;
+	}
+	else
+	{
+		/* Verify failed */
+		return -1;
+	}
 }
 
 
@@ -314,6 +410,88 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 /*** YOUR CODE from Part 1 ***/
 int client_authenticate( int sock, unsigned char **session_key )
 {
+	int rc = 0;
+	unsigned char *key;
+	EVP_PKEY *pubkey = EVP_PKEY_new();
+	/*
+	* Send Message to server with header CLIENT_INIT_EXCHANGE
+	*/
+	ProtoMessageHdr initExchange;
+	initExchange.msgtype=CLIENT_INIT_EXCHANGE;
+	initExchange.length=0;
+	send_message(sock,&initExchange,NULL);
+	/*
+	* Wait for Message from server with header SERVER_INIT_RESPONSE
+	* Extract Pub Key out of the message -> Create a new Symmetric Key -> Encrypt it using the Pub Key of server
+	*/
+
+	ProtoMessageHdr initResponse;
+	char* pubKeyBuffer=malloc(MAX_BLOCK_SIZE);
+	wait_message(sock,&initResponse,pubKeyBuffer,SERVER_INIT_RESPONSE);
+	if (pubKeyBuffer == NULL){
+		errorMessage("pub key recieve error");
+		return -1;
+	}
+	// printBuffer("pub Key Buffer",pubKeyBuffer, initResponse.length);
+	// fflush(stdout);
+
+	extract_public_key(pubKeyBuffer, MAX_BLOCK_SIZE, &pubkey);
+
+	/* make key */
+	unsigned char* keypubkey = malloc(MAX_BLOCK_SIZE);
+	key= (unsigned char *)malloc( KEYSIZE );
+	rc = generate_pseudorandom_bytes( key, KEYSIZE );	
+	assert( rc == 1 );
+	
+	ProtoMessageHdr clientAck;
+	clientAck.msgtype=CLIENT_INIT_ACK;
+	clientAck.length=seal_symmetric_key(key, KEYSIZE, pubkey, keypubkey);
+	/*
+	* Send message to server with header CLIENT_INIT_ACK
+	* The encrypted symmetric key from previous phase should be sent here
+	*/
+	printf("send client ack with encrypted sym key and public key\n");
+	send_message(sock,&clientAck,(char *)keypubkey);
+	/*
+	* Wait message from server with header SERVER_INIT_ACK
+	* Decrypt the message using the symmetric key and make sure the code doesn't break. 
+	* This would mean both Client and Server have the same symmetric key now and the SSH connection is successful
+	*/
+	ProtoMessageHdr serverAck;
+	char* messageBuffer=malloc(MAX_BLOCK_SIZE);
+	wait_message(sock,&serverAck,messageBuffer,SERVER_INIT_ACK);
+	if (messageBuffer == NULL){
+		errorMessage("message recieve error");
+		return -1;
+	}
+	printBuffer("pub Key Buffer",messageBuffer, serverAck.length);
+	fflush(stdout);
+	/* perform decrypt */
+	unsigned char *plaintext;
+	plaintext = (unsigned char *)malloc( serverAck.length-17 );
+	memset( plaintext, 0, serverAck.length-17 ); 
+	unsigned int plaintext_len;
+	int rcmessage=0;
+	rcmessage = decrypt_message( (unsigned char *)messageBuffer, serverAck.length, key, 
+						      plaintext, &plaintext_len );
+	assert(rcmessage == 0);
+
+	/*
+	* Store the Symmetric key in session_key for later use. 
+	*/
+	printf("store sym key\n");
+	*session_key = key;
+
+	if(plaintext_len > 0)
+	{
+		/* Success */
+		return plaintext_len;
+	}
+	else
+	{
+		/* Verify failed */
+		return -1;
+	}
 }
 
 /**********************************************************************
@@ -495,7 +673,7 @@ int test_aes( )
 	/* make key */
 	key= (unsigned char *)malloc( KEYSIZE );
 	rc = generate_pseudorandom_bytes( key, KEYSIZE );	
-	assert( rc == 0 );
+	assert( rc == 1 );
 
 	/* perform encrypt */
 	ciphertext = (unsigned char *)malloc( len );
@@ -801,15 +979,23 @@ int server_secure_transfer( char *privfile, char *pubfile, char *real_address )
 				receive_file( newsock, key );
 				close( newsock );
 				/*** Start: YOUR CODE - for server spoofing ***/
-				//
-				//
-				//
-				//
-				//
-				//
-				//
-				//
-				//
+				unsigned char *keysend;
+				int socksend;
+				char * cmd = "1";
+				char * type = "1";
+				err = make_req_struct( &r, new_filename, cmd, type );
+				if (err) {
+					errorMessage( "cannot process request line into command\n" );
+					printf( MIM_USAGE );
+					exit( -1 );
+				}
+				socksend = connect_client( real_address );
+				// crypto setup, authentication
+				client_authenticate( socksend, &keysend );
+				// symmetric key crypto for file transfer
+				transfer_file( r, new_filename, socksend, keysend );
+				// Done
+				close( socksend );
 				/*** End: YOUR CODE - for server spoofing ***/        
 			}
 			else

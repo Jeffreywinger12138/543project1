@@ -12,7 +12,7 @@
 
 #include "cse543-ssl.h"
 
-
+// symmtric encryt // 
 int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *aad,
 	    int aad_len, unsigned char *key, unsigned char *iv,
 	    unsigned char *ciphertext, unsigned char *tag)
@@ -202,7 +202,9 @@ int rsa_encrypt(unsigned char *msg, unsigned int msgLen, unsigned char **encMsg,
 	*ekl = EVP_PKEY_size(pubkey);
 	*ek = (unsigned char*)malloc(*ekl);
 	*iv = (unsigned char*)malloc(*ivl);
-	if(*ek == NULL || *iv == NULL) return -1;
+	if(*ek == NULL || *iv == NULL) {
+		return -1;
+	}
 	memset( *iv, 0, *ivl );  // TJ: added
 
 	*encMsg = (unsigned char*)malloc(msgLen + *ivl);

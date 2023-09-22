@@ -38,7 +38,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define BLOCKSIZE 128
 #define KEYSIZE 32
 #define TAGSIZE 16
+#define IVSIZE 17
 #define PUBKEY_FILE "./pubkey.tmp" 
+
 
 /* command and type */
 #define CMD_CREATE 1
